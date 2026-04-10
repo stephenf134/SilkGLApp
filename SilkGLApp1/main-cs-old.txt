@@ -1,0 +1,349 @@
+using System;
+using System.Runtime.InteropServices;
+using ImGuiNET;
+using Silk.NET.Input;
+using Silk.NET.Maths;
+using Silk.NET.OpenGL;
+using Silk.NET.OpenGL.Extensions.ImGui;
+using Silk.NET.Windowing;
+
+public static unsafe class MainApp
+{
+    private static IWindow? _window;
+    private static GL? _gl;
+    private static uint _vertexArrayObject;
+    private static uint _vertexBufferObject;
+    private static uint _elementBufferObject;
+    private static uint _shaderProgram;
+    private static System.Collections.Generic.List<float> _vertices;
+    private static System.Collections.Generic.List<uint> _indices;
+    private static bool hasPressedQ = false;
+    private static bool awaitingVtxUpdate = false;
+    private static ImGuiController _imGuiController;
+    private static float   x1 = default, y1 = default,
+        x2 = default, y2 = default,
+        x3 = default, y3 = default;
+    
+
+    private static bool imgui_do_input = false;
+    private static bool imgui_load_file = false;
+    private static bool imgui_do_chdir = false;
+    private static string tmpstr_new_dir;
+    private static byte[] ldfl_inp_buf = new byte[32];
+    private static byte[] newdir_inp_buf = new byte[32];
+
+    private static string fpath = "";
+    
+    public static string ReadToken(StreamReader reader) {
+        var sb = new System.Text.StringBuilder();
+        int nextChar;
+
+        // Skip leading whitespace (spaces, tabs, newlines)
+        while ((nextChar = reader.Read()) != -1 && char.IsWhiteSpace((char)nextChar)) { }
+
+        // Read characters until next whitespace
+        while (nextChar != -1 && !char.IsWhiteSpace((char)nextChar)) {
+            sb.Append((char)nextChar);
+            nextChar = reader.Read();
+        }
+
+        return sb.ToString();
+    }
+
+    
+    public static void Run()
+    {
+        _vertices = new List<float>();
+        _indices = new List<uint>();
+        var options = WindowOptions.Default;
+        options.Size = new Vector2D<int>(800, 600);
+        options.Title = "Silk.NET Indexed Triangle";
+        options.API = new GraphicsAPI(ContextAPI.OpenGL, ContextProfile.Core, ContextFlags.Default, new APIVersion(3, 3));
+
+        _window = Window.Create(options);
+        _window.Load += OnLoad;
+        _window.Render += OnRender;
+        _window.FramebufferResize += OnFramebufferResize;
+        _window.Closing += OnClosing;
+        _window.Run();
+    }
+
+    private static void UpdateVerticesAndIndices(System.Collections.Generic.List<float> new_vertices, System.Collections.Generic.List<uint> new_indices)
+    {
+        foreach (float new_vertex in new_vertices)
+        {
+            _vertices.Add(new_vertex);
+        }
+
+        foreach (uint new_index in new_indices)
+        {
+            _indices.Add(new_index);
+        }
+    }
+
+    private static void UpdateVerticesAndIndicesWithArr(float[] new_vertices, uint[] new_indices)
+    {
+        foreach (float new_vertex in new_vertices)
+        {
+            _vertices.Add(new_vertex);
+        }
+
+        foreach (uint new_index in new_indices)
+        {
+            _indices.Add(new_index);
+        }
+    }
+
+    private static void UpdateBufObjectsWithNewData()
+    {
+        _gl.BindVertexArray(_vertexArrayObject);
+        _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _vertexBufferObject);
+        fixed (float* vertices_ptr = CollectionsMarshal.AsSpan(_vertices))
+        {
+            _gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(_vertices.Count * sizeof(float)), vertices_ptr, BufferUsageARB.StaticDraw);
+        }
+
+        _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, _elementBufferObject);
+        fixed (uint* indices_ptr = CollectionsMarshal.AsSpan(_indices))
+        {
+            _gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(_indices.Count * sizeof(uint)), indices_ptr, BufferUsageARB.StaticDraw);
+        }
+        
+        _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 3 * sizeof(float), (void*)0);
+        _gl.EnableVertexAttribArray(0);
+    }
+
+    private static void OnLoad()
+    {
+
+        tmpstr_new_dir = "";
+        _gl = _window!.CreateOpenGL();
+
+        _vertexArrayObject = _gl.GenVertexArray();
+        _vertexBufferObject = _gl.GenBuffer();
+        _elementBufferObject = _gl.GenBuffer();
+
+        UpdateBufObjectsWithNewData();
+
+        _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 3 * sizeof(float), (void*)0);
+        _gl.EnableVertexAttribArray(0);
+
+        _shaderProgram = CreateShaderProgram(_gl);
+
+        Silk.NET.Input.IInputContext ThisInputContext = _window.CreateInput();
+        _imGuiController = new ImGuiController(_gl, _window, ThisInputContext);
+        foreach (var keyboard in ThisInputContext.Keyboards)
+        {
+            keyboard.KeyDown += OnKeyDown;
+        }
+    }
+
+    private static void OnKeyDown(Silk.NET.Input.IKeyboard kbd, Silk.NET.Input.Key key, int keyCode)
+    {
+        if (key == Silk.NET.Input.Key.Q)
+        {
+            if (!hasPressedQ)
+            {
+                hasPressedQ = true;
+                System.Console.WriteLine("pressed");
+            }
+        }
+    }
+
+    private static System.Tuple<System.Collections.Generic.List<float>, System.Collections.Generic.List<uint>> GetDataFromFile(string path)
+    {
+        System.Collections.Generic.List<float> emptyFloatList = new List<float>();
+        System.Collections.Generic.List<uint> emptyUintList = new List<uint>();
+        System.Tuple<System.Collections.Generic.List<float>, System.Collections.Generic.List<uint>> ret = new Tuple<List<float>, List<uint>>(emptyFloatList, emptyUintList);
+
+        System.IO.FileStream fstrm = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read);
+        // detect VAO string
+        using (System.IO.StreamReader strmRdr = new StreamReader(fstrm))
+        {
+            System.Console.WriteLine(ReadToken(strmRdr));
+        }
+
+        return ret;
+    }
+
+    private static void OnRender(double _)
+    {
+        _imGuiController.Update((float) _);
+        ImGui.Begin("Geometry Editor:");
+        if (ImGui.Button("add triangle"))
+        {
+            imgui_do_input = true;
+        }
+
+        if (ImGui.Button("add 2d shape from .bfld file"))
+        {
+            for (uint i = 0; i < ldfl_inp_buf.Length; i++)
+            {
+                ldfl_inp_buf.SetValue((byte)0, (long)i);
+            }
+            imgui_load_file = true;
+        }
+
+        if (ImGui.Button("chdir"))
+        {
+            imgui_do_chdir = true;
+            for (uint i = 0; i < newdir_inp_buf.Length; i++)
+            {
+                newdir_inp_buf.SetValue((byte)0, (long)i);
+            }
+        }
+
+        if (imgui_do_input)
+        {
+            ImGui.InputFloat("x1", ref x1); ImGui.InputFloat("y1", ref y1);
+            ImGui.InputFloat("x2", ref x2); ImGui.InputFloat("y2", ref y2);
+            ImGui.InputFloat("x3", ref x3); ImGui.InputFloat("y3", ref y3);
+            if (ImGui.Button("Enter"))
+            {
+                float[] new_float_arr =
+                {
+                    x1, y1, 0.0f,
+                    x2, y2, 0.0f,
+                    x3, y3, 0.0f
+                };
+                System.Console.WriteLine($"index count: {(uint)_indices.Count}");
+                uint[] new_index_arr =
+                {
+                    (uint)_indices.Count, (uint)_indices.Count + 1, (uint)_indices.Count + 2
+                };
+                UpdateVerticesAndIndicesWithArr(new_float_arr, new_index_arr);
+                UpdateBufObjectsWithNewData();
+                
+                System.Console.WriteLine("vertices:");
+                foreach (float vt in _vertices)
+                {
+                    System.Console.WriteLine($"\t{vt}");
+                }
+                
+                imgui_do_input = false;
+            }
+        }
+
+        if (imgui_load_file)
+        {
+            if (ImGui.InputText("inp", ldfl_inp_buf, 32))
+            {
+                fpath = System.Text.Encoding.UTF8.GetString(ldfl_inp_buf);
+                System.Console.WriteLine($"[DEBUG: fpath is set to `{fpath}`]");
+            }
+
+            if (ImGui.Button("ENTER"))
+            {
+                System.Console.WriteLine($"Response: {fpath}");
+                GetDataFromFile("/home/stephen/file-examples/foo.vdat");
+                imgui_load_file = false;
+            }
+        }
+
+        if (imgui_do_chdir)
+        {
+            if (ImGui.InputText("chdir", newdir_inp_buf, 32))
+            {
+                tmpstr_new_dir = System.Text.Encoding.UTF8.GetString(newdir_inp_buf);
+                System.Console.WriteLine($"tmpstr set to `{tmpstr_new_dir}`");
+            }
+
+            if (ImGui.Button("set this dir"))
+            {
+                System.Environment.CurrentDirectory = tmpstr_new_dir;
+                System.Console.WriteLine($"[DEBUG] cwd set to {tmpstr_new_dir}");
+                imgui_do_chdir = false;
+            }
+        }
+        
+        ImGui.End();
+        
+        _gl!.ClearColor(0.1f, 0.12f, 0.16f, 1.0f);
+        _gl.Clear(ClearBufferMask.ColorBufferBit);
+
+        _gl.UseProgram(_shaderProgram);
+        _gl.BindVertexArray(_vertexArrayObject);
+        uint count = 3;
+        if (hasPressedQ)
+        {
+            count = 6;
+        }
+        _gl.DrawElements(PrimitiveType.Triangles, (uint)_indices.Count, DrawElementsType.UnsignedInt, null);
+        _imGuiController.Render();
+    }
+
+    private static void OnFramebufferResize(Vector2D<int> size)
+    {
+        _gl!.Viewport(size);
+    }
+
+    private static void OnClosing()
+    {
+        if (_gl is null)
+        {
+            return;
+        }
+
+        _gl.DeleteBuffer(_vertexBufferObject);
+        _gl.DeleteBuffer(_elementBufferObject);
+        _gl.DeleteVertexArray(_vertexArrayObject);
+        _gl.DeleteProgram(_shaderProgram);
+    }
+
+    private static uint CreateShaderProgram(GL gl)
+    {
+        const string vertexShaderSource = """
+            #version 330 core
+            layout (location = 0) in vec3 aPosition;
+
+            void main()
+            {
+                gl_Position = vec4(aPosition, 1.0);
+            }
+            """;
+
+        const string fragmentShaderSource = """
+            #version 330 core
+            out vec4 FragColor;
+
+            void main()
+            {
+                FragColor = vec4(0.95, 0.45, 0.20, 1.0);
+            }
+            """;
+
+        uint vertexShader = CompileShader(gl, ShaderType.VertexShader, vertexShaderSource);
+        uint fragmentShader = CompileShader(gl, ShaderType.FragmentShader, fragmentShaderSource);
+
+        uint shaderProgram = gl.CreateProgram();
+        gl.AttachShader(shaderProgram, vertexShader);
+        gl.AttachShader(shaderProgram, fragmentShader);
+        gl.LinkProgram(shaderProgram);
+        gl.GetProgram(shaderProgram, ProgramPropertyARB.LinkStatus, out int linkStatus);
+        if (linkStatus == 0)
+        {
+            throw new InvalidOperationException($"Program link failed: {gl.GetProgramInfoLog(shaderProgram)}");
+        }
+
+        gl.DetachShader(shaderProgram, vertexShader);
+        gl.DetachShader(shaderProgram, fragmentShader);
+        gl.DeleteShader(vertexShader);
+        gl.DeleteShader(fragmentShader);
+
+        return shaderProgram;
+    }
+
+    private static uint CompileShader(GL gl, ShaderType shaderType, string source)
+    {
+        uint shader = gl.CreateShader(shaderType);
+        gl.ShaderSource(shader, source);
+        gl.CompileShader(shader);
+        gl.GetShader(shader, ShaderParameterName.CompileStatus, out int compileStatus);
+        if (compileStatus == 0)
+        {
+            throw new InvalidOperationException($"{shaderType} compilation failed: {gl.GetShaderInfoLog(shader)}");
+        }
+
+        return shader;
+    }
+}

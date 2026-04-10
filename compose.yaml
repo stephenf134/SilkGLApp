@@ -1,0 +1,7 @@
+﻿services:
+  silkglapp1:
+    image: silkglapp1
+    build:
+      context: .
+      dockerfile: SilkGLApp1/Dockerfile
+
